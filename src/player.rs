@@ -350,6 +350,17 @@ fn resolve_mpv(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
         };
     }
 
+    // An explicit override, for a portable install or a machine where the
+    // installer did not touch PATH. This is also how CI points at the mpv it
+    // just installed: on Windows an installer updates the machine PATH, which a
+    // shell that is already running does not see.
+    if let Some(path) = std::env::var_os("EON_MPV_PATH")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    {
+        return Ok(path);
+    }
+
     // An installer that does not touch PATH is the common case on Windows, so
     // looking only at PATH would report "not installed" to someone who just
     // installed it.
@@ -357,6 +368,8 @@ fn resolve_mpv(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
         r"C:\Program Files\MPV Player\mpv.exe",
         r"C:\Program Files\mpv\mpv.exe",
         r"C:\Program Files (x86)\mpv\mpv.exe",
+        r"C:\ProgramData\chocolatey\bin\mpv.exe",
+        r"C:\ProgramData\chocolatey\lib\mpvio.install\tools\mpv.exe",
         "/usr/bin/mpv",
         "/usr/local/bin/mpv",
         "/opt/homebrew/bin/mpv",

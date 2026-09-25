@@ -44,6 +44,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install mpv
         run: choco install mpv --no-progress -y
+      - name: Locate mpv
+        shell: pwsh
+        # The installer updates the machine PATH, which a step that is already
+        # running does not see. Find the binary and pass it explicitly.
+        run: |
+          $hit = Get-ChildItem C:\ProgramData\chocolatey -Recurse -Filter mpv.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $hit) { throw "mpv.exe not found after install" }
+          Write-Host "mpv: $($hit.FullName)"
+          & $hit.FullName --version | Select-Object -First 1
+          "EON_MPV_PATH=$($hit.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Playback tests against a real mpv
         # mpv own synthetic test pattern, with video and audio output disabled:
         # this exercises process launch and the JSON IPC channel, which is where
