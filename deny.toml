@@ -1,0 +1,36 @@
+# cargo-deny: supply chain and licence gate (madde 37).
+# A dependency is a commitment; this file makes the commitment explicit.
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Our own crates are copyleft and unpublished; the allow list below governs
+# DEPENDENCIES, which must stay permissive.
+private = { ignore = true }
+
+# GPL-3.0-or-later project: permissive inbound licences only. A copyleft
+# dependency with a different reciprocity than ours is a decision, not a default,
+# and must be added here deliberately.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

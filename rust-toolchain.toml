@@ -1,0 +1,6 @@
+# Pinned toolchain -- madde 22 (derleme doğrulanabilirliği).
+# Bump deliberately, in its own commit, with a CHANGELOG entry.
+[toolchain]
+channel = "1.83.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,33 @@
+[package]
+name = "eon-stream-engine"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+description = "EON Stream streaming: BitTorrent engine, sequential download, local HTTP server, mpv control."
+repository = "https://github.com/EON-Extensible-Open-Network/eon-stream-engine"
+license = "GPL-3.0-or-later"
+keywords = ["bittorrent", "streaming", "mpv", "media"]
+categories = ["multimedia"]
+publish = false
+
+[features]
+default = []
+# Embedded libmpv instead of the separate-process default. Not implemented;
+# the feature gate exists so the decision stays visible (madde 2).
+embedded-mpv = []
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints.rust]
+unsafe_code = "deny"      # not "forbid": FFI may be needed if libmpv is ever embedded
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"

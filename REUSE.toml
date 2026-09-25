@@ -1,0 +1,12 @@
+version = 1
+SPDX-PackageName = "eon-stream-engine"
+SPDX-PackageSupplier = "EON contributors <hello@eonstream.org>"
+SPDX-PackageDownloadLocation = "https://github.com/EON-Extensible-Open-Network/eon-stream-engine"
+
+# Catch-all. Source files also carry their own SPDX headers; this covers the
+# rest -- dotfiles, workflows, configuration -- so `reuse lint` passes without
+# a comment header in files where one would be noise.
+[[annotations]]
+path = ["**"]
+SPDX-FileCopyrightText = "2026 EON contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

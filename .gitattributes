@@ -1,0 +1,42 @@
+# Normalise to LF in the repository and in working copies. Without this, a Windows
+# checkout rewrites every file to CRLF and diffs become noise across contributors.
+* text=auto eol=lf
+
+# Explicitly text
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
+*.jsonc   text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.mjs     text eol=lf
+*.js      text eol=lf
+*.ts      text eol=lf
+*.sh      text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+LICENSE   text eol=lf
+NOTICE    text eol=lf
+
+# Windows-only scripts keep CRLF
+*.ps1     text eol=crlf
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# Binary: never diffed, never converted
+*.png     binary
+*.jpg     binary
+*.webp    binary
+*.ico     binary
+*.icns    binary
+*.woff2   binary
+*.wasm    binary
+*.mp4     binary
+*.mkv     binary
+*.eonpkg    binary
+
+# Generated / vendored files excluded from language statistics and diffs
+Cargo.lock       linguist-generated=true
+package-lock.json linguist-generated=true
+LICENSE          linguist-vendored=true

@@ -1,0 +1,27 @@
+EON Stream Stream
+Copyright (c) 2026 EON contributors
+
+Licensed under GPL-3.0-or-later WITH the EON Module ABI Exception 1.0
+(see LICENSE and LICENSE-EXCEPTION.md).
+
+Third-party components -- READ THIS BEFORE DISTRIBUTING
+-------------------------------------------------------
+This repository interacts with components whose licenses constrain distribution.
+Getting this wrong is the single most likely licensing mistake in the project.
+
+  librqbit        Apache-2.0    -- BitTorrent engine (madde 1)
+  mpv / libmpv    LGPL-2.1+     -- when built with --lgpl
+                  GPL-2.0+      -- as commonly distributed, with GPL-only
+                                   components or a GPL-configured FFmpeg
+  FFmpeg          LGPL-2.1+ or GPL-2.0+ depending on build configuration
+
+Consequences:
+  * A GPL-configured mpv/FFmpeg build requires the distributed binary to be
+    GPL-compatible. GPL-3.0-or-later satisfies this; a permissive-only license
+    would not.
+  * v1 runs mpv as a SEPARATE PROCESS over JSON IPC (madde 2). This keeps the
+    coupling weak. If libmpv is ever embedded in-process, revisit this file and
+    the app's bundling before shipping.
+  * Redistributing mpv or FFmpeg binaries carries their own source-availability
+    obligations. Build inputs and exact configure flags must be recorded in
+    `docs/third-party-builds.md` before any release that bundles them.
