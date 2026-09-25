@@ -10,7 +10,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # Deliberately no RUSTFLAGS: -D warnings.
+  #
+  # Cargo.toml already denies clippy::all, unwrap_used and panic -- the lints
+  # that matter. clippy::pedantic is set to warn on top of that, and it carries
+  # style opinions (doc_markdown and friends) that are useful as hints but make
+  # a poor gate: turning them into errors means a build breaks over a missing
+  # pair of backticks. Advisory lints advise; denied lints block.
 
 jobs:
   check:
@@ -28,6 +34,21 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features
       - run: cargo test --all-features
+
+  mpv:
+    name: mpv IPC (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mpv
+        run: choco install mpv --no-progress -y
+      - name: Playback tests against a real mpv
+        # mpv own synthetic test pattern, with video and audio output disabled:
+        # this exercises process launch and the JSON IPC channel, which is where
+        # the risk is, and needs no display and no sample file.
+        run: cargo test -- --ignored --test-threads=1
 
   deny:
     name: licences · advisories

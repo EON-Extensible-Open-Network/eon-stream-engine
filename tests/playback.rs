@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 EON contributors
+
+//! Playback tests that need a real mpv.
+//!
+//! Marked `#[ignore]` so `cargo test` stays green on a machine without mpv, and
+//! run explicitly with `cargo test -- --ignored` where it is installed. CI does
+//! exactly that on the Windows runner.
+//!
+//! The source is mpv's own synthetic test pattern (`av://lavfi:testsrc`), so
+//! nothing is downloaded and no sample file is committed. Video and audio output
+//! are disabled, which means this exercises the part that actually carries risk
+//! -- process launch and the JSON IPC channel -- without needing a display.
+
+#![allow(clippy::unwrap_used, clippy::panic)]
+
+use std::time::Duration;
+
+use eon_stream_engine::{MpvPlayer, PlaybackSource, PlayerOptions, SeekMode};
+
+fn headless() -> PlayerOptions {
+    PlayerOptions {
+        // No window, no sound: this is a channel test, not a rendering test.
+        extra_args: vec![
+            "--vo=null".into(),
+            "--ao=null".into(),
+            "--no-force-window".into(),
+        ],
+        ipc_timeout: Duration::from_secs(30),
+        ..PlayerOptions::default()
+    }
+}
+
+/// A five second synthetic clip mpv generates itself.
+fn test_pattern() -> PlaybackSource {
+    PlaybackSource::Url("av://lavfi:testsrc=duration=5:size=320x240:rate=10".into())
+}
+
+#[test]
+#[ignore = "needs mpv installed"]
+fn launches_mpv_and_talks_to_it() {
+    let mut player = MpvPlayer::launch(&test_pattern(), &headless()).unwrap();
+
+    // The IPC round trip is the thing under test: ask for something mpv always
+    // knows about.
+    let version = player.get_property("mpv-version").unwrap();
+    assert!(
+        version.contains("mpv"),
+        "unexpected version reply: {version}"
+    );
+
+    assert!(player.is_running());
+    player.quit().unwrap();
+}
+
+#[test]
+#[ignore = "needs mpv installed"]
+fn reports_duration_and_position() {
+    let mut player = MpvPlayer::launch(&test_pattern(), &headless()).unwrap();
+
+    // Loading is asynchronous; a property that is not ready yet is None rather
+    // than an error, so poll rather than assuming.
+    let mut duration = None;
+    for _ in 0..80 {
+        if let Ok(Some(d)) = player.duration() {
+            duration = Some(d);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let duration = duration.expect("mpv never reported a duration");
+    assert!(
+        (duration - 5.0).abs() < 1.0,
+        "expected about 5s, got {duration}"
+    );
+
+    player.seek(2.0, SeekMode::Absolute).unwrap();
+    let mut seeked = None;
+    for _ in 0..40 {
+        if let Ok(Some(p)) = player.position() {
+            if p >= 1.5 {
+                seeked = Some(p);
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(seeked.is_some(), "seek did not take effect");
+
+    player.quit().unwrap();
+}
+
+#[test]
+#[ignore = "needs mpv installed"]
+fn pause_and_resume_are_accepted() {
+    let mut player = MpvPlayer::launch(&test_pattern(), &headless()).unwrap();
+
+    player.set_paused(true).unwrap();
+    assert_eq!(player.get_property("pause").unwrap(), "true");
+
+    player.set_paused(false).unwrap();
+    assert_eq!(player.get_property("pause").unwrap(), "false");
+
+    player.quit().unwrap();
+}
+
+#[test]
+#[ignore = "needs mpv installed"]
+fn a_rejected_command_is_an_error_not_a_panic() {
+    let mut player = MpvPlayer::launch(&test_pattern(), &headless()).unwrap();
+
+    let result = player.get_property("this-property-does-not-exist");
+    assert!(
+        result.is_err(),
+        "expected mpv to reject an unknown property"
+    );
+
+    // The channel must still be usable afterwards.
+    assert!(player.get_property("mpv-version").is_ok());
+    player.quit().unwrap();
+}

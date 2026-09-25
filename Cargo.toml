@@ -2,8 +2,8 @@
 name = "eon-stream-engine"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.83"
-description = "EON Stream streaming: BitTorrent engine, sequential download, local HTTP server, mpv control."
+rust-version = "1.98"
+description = "EON Stream engine: BitTorrent streaming, local HTTP server, and mpv playback control."
 repository = "https://github.com/EON-Extensible-Open-Network/eon-stream-engine"
 license = "GPL-3.0-or-later"
 keywords = ["bittorrent", "streaming", "mpv", "media"]
