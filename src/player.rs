@@ -80,8 +80,16 @@ pub struct PlayerOptions {
     pub fullscreen: bool,
     /// Window title mpv shows.
     pub title: Option<String>,
-    /// Subtitle files to load alongside the source.
+    /// Subtitle files or URLs to load alongside the source.
     pub subtitle_urls: Vec<String>,
+    /// Headers to send with the media request.
+    ///
+    /// This is what an addon's `proxyHeaders.request` becomes. Without it a CDN
+    /// that requires a `Referer` answers 403 and the source looks dead, which is
+    /// the most common reason a stream works in one client and not another.
+    pub http_headers: Vec<(String, String)>,
+    /// Where to start playing, in seconds. Used to resume.
+    pub start_at_secs: Option<f64>,
     /// Extra arguments, appended last.
     pub extra_args: Vec<String>,
     /// How long to wait for mpv to open its IPC channel.
@@ -96,8 +104,38 @@ impl Default for PlayerOptions {
             fullscreen: false,
             title: None,
             subtitle_urls: Vec::new(),
+            http_headers: Vec::new(),
+            start_at_secs: None,
             extra_args: Vec::new(),
             ipc_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+/// One selectable track inside the media.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Track {
+    /// mpv's track id, used to select it.
+    pub id: u32,
+    /// `video`, `audio` or `sub`.
+    pub kind: String,
+    /// Language code, when the file says.
+    pub language: Option<String>,
+    /// Track title, when the file says.
+    pub title: Option<String>,
+    /// Whether this track is currently selected.
+    pub selected: bool,
+}
+
+impl Track {
+    /// A line for a list.
+    #[must_use]
+    pub fn display_line(&self) -> String {
+        let mark = if self.selected { "*" } else { " " };
+        let language = self.language.as_deref().unwrap_or("--");
+        match &self.title {
+            Some(title) => format!("{mark} {:>2}. {language}  {title}", self.id),
+            None => format!("{mark} {:>2}. {language}", self.id),
         }
     }
 }
@@ -168,8 +206,28 @@ impl MpvPlayer {
         if let Some(title) = &options.title {
             command.arg(format!("--title={title}"));
         }
+        if let Some(start) = options.start_at_secs.filter(|s| *s > 0.0) {
+            command.arg(format!("--start={start}"));
+        }
         for subtitle in &options.subtitle_urls {
             command.arg(format!("--sub-file={subtitle}"));
+        }
+        if !options.http_headers.is_empty() {
+            // mpv takes one comma-separated list. A header value containing a
+            // comma would split wrongly, so such values are skipped rather than
+            // silently corrupting the request: a missing header fails loudly,
+            // a mangled one fails mysteriously.
+            let fields: Vec<String> = options
+                .http_headers
+                .iter()
+                .filter(|(name, value)| {
+                    !name.is_empty() && !name.contains(',') && !value.contains(',')
+                })
+                .map(|(name, value)| format!("{name}: {value}"))
+                .collect();
+            if !fields.is_empty() {
+                command.arg(format!("--http-header-fields={}", fields.join(",")));
+            }
         }
         for extra in &options.extra_args {
             command.arg(extra);
@@ -217,6 +275,33 @@ impl MpvPlayer {
 
         self.ipc.send_line(&request)?;
         self.ipc.await_reply(id)
+    }
+
+    /// Send a command and return mpv's whole reply line.
+    ///
+    /// [`Self::command`] extracts a scalar `data` field, which is wrong for a
+    /// reply whose data is an array — `track-list` being the one that matters.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn command_raw(&mut self, args: &[&str]) -> Result<String> {
+        let id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+
+        let mut request = String::from("{\"command\":[");
+        for (index, arg) in args.iter().enumerate() {
+            if index > 0 {
+                request.push(',');
+            }
+            json::write_string(&mut request, arg);
+        }
+        request.push_str("],\"request_id\":");
+        request.push_str(&id.to_string());
+        request.push('}');
+
+        self.ipc.send_line(&request)?;
+        self.ipc.await_reply_raw(id)
     }
 
     /// Read a property.
@@ -285,6 +370,137 @@ impl MpvPlayer {
     /// Whether mpv is still running.
     pub fn is_running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Playback speed, as a multiple of normal.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn set_speed(&mut self, speed: f64) -> Result<()> {
+        // mpv accepts a wide range but silently misbehaves at the extremes.
+        let clamped = speed.clamp(0.25, 4.0);
+        self.set_property("speed", &clamped.to_string())
+    }
+
+    /// Shift the audio relative to the video, in seconds.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn set_audio_delay(&mut self, seconds: f64) -> Result<()> {
+        self.set_property("audio-delay", &seconds.to_string())
+    }
+
+    /// Shift the subtitles relative to the video, in seconds.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn set_subtitle_delay(&mut self, seconds: f64) -> Result<()> {
+        self.set_property("sub-delay", &seconds.to_string())
+    }
+
+    /// Show or hide subtitles without unloading them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn set_subtitles_visible(&mut self, visible: bool) -> Result<()> {
+        self.set_property("sub-visibility", if visible { "yes" } else { "no" })
+    }
+
+    /// Volume, 0 to 130 as mpv counts it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn set_volume(&mut self, volume: f64) -> Result<()> {
+        self.set_property("volume", &volume.clamp(0.0, 130.0).to_string())
+    }
+
+    /// Load a subtitle file or URL into the running player and select it.
+    ///
+    /// This is how an addon's subtitle track reaches the screen: fetched by the
+    /// protocol client, handed here as a URL.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn add_subtitle(&mut self, url: &str, title: Option<&str>) -> Result<()> {
+        match title {
+            Some(title) => self.command(&["sub-add", url, "select", title]).map(|_| ()),
+            None => self.command(&["sub-add", url, "select"]).map(|_| ()),
+        }
+    }
+
+    /// Select a track by mpv's track id. `None` turns the track off.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`], plus [`Error::PlayerCommand`] for an unknown kind.
+    pub fn select_track(&mut self, kind: &str, id: Option<u32>) -> Result<()> {
+        let property = match kind {
+            "video" => "vid",
+            "audio" => "aid",
+            "sub" => "sid",
+            other => {
+                return Err(Error::PlayerCommand {
+                    message: format!("unknown track kind '{other}'"),
+                })
+            }
+        };
+        let value = id.map_or_else(|| "no".to_owned(), |id| id.to_string());
+        self.set_property(property, &value)
+    }
+
+    /// Every track in the media, with which are selected.
+    ///
+    /// Parsed out of mpv's `track-list` without a JSON dependency: the reply is
+    /// one flat array of flat objects, so it is scanned rather than parsed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::command`].
+    pub fn tracks(&mut self) -> Result<Vec<Track>> {
+        let raw = self.command_raw(&["get_property", "track-list"])?;
+        Ok(crate::track::parse_track_list(&raw))
+    }
+
+    /// How much is buffered ahead of the playhead, in seconds.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PlayerIpc`] on a channel failure. An unavailable property is
+    /// `Ok(None)`: it is the normal state before playback starts.
+    pub fn buffered_secs(&mut self) -> Result<Option<f64>> {
+        Ok(self
+            .get_property("demuxer-cache-duration")
+            .ok()
+            .and_then(|v| v.parse().ok()))
+    }
+
+    /// Current read speed in bytes per second, when mpv reports one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::buffered_secs`].
+    pub fn network_speed_bytes(&mut self) -> Result<Option<f64>> {
+        Ok(self
+            .get_property("cache-speed")
+            .ok()
+            .and_then(|v| v.parse().ok()))
+    }
+
+    /// Whether mpv thinks it is stalled waiting for data.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::buffered_secs`].
+    pub fn is_buffering(&mut self) -> Result<bool> {
+        Ok(self
+            .get_property("paused-for-cache")
+            .is_ok_and(|v| v == "true"))
     }
 
     /// Ask mpv to close, then wait for it.
@@ -522,11 +738,21 @@ mod ipc {
             })
         }
 
+        /// Read until the reply carrying `request_id` arrives, returning the
+        /// whole line. For replies whose `data` is an array.
+        pub(super) fn await_reply_raw(&mut self, request_id: u64) -> Result<String> {
+            self.read_reply(request_id, true)
+        }
+
         /// Read until the reply carrying `request_id` arrives.
         ///
         /// mpv interleaves asynchronous events with replies, so everything that
         /// is not our reply is skipped rather than treated as a protocol error.
         pub(super) fn await_reply(&mut self, request_id: u64) -> Result<String> {
+            self.read_reply(request_id, false)
+        }
+
+        fn read_reply(&mut self, request_id: u64, raw: bool) -> Result<String> {
             let needle = format!("\"request_id\":{request_id}");
             // Bound the loop: a channel that goes quiet must not hang a caller.
             for _ in 0..512 {
@@ -550,6 +776,9 @@ mod ipc {
                         message: extract_field(&line, "error")
                             .unwrap_or_else(|| line.trim().into()),
                     });
+                }
+                if raw {
+                    return Ok(line);
                 }
                 return Ok(extract_field(&line, "data").unwrap_or_default());
             }

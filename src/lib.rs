@@ -67,9 +67,10 @@
 
 pub mod error;
 pub mod player;
+pub(crate) mod track;
 
 pub use error::{Error, Result};
-pub use player::{MpvPlayer, PlaybackSource, PlayerOptions, SeekMode};
+pub use player::{MpvPlayer, PlaybackSource, PlayerOptions, SeekMode, Track};
 
 /// Torrent engine: sequential piece selection around the playhead, web seeds
 /// (BEP 19), private-mode restrictions for institutional distribution.
