@@ -12,7 +12,7 @@
 //! are disabled, which means this exercises the part that actually carries risk
 //! -- process launch and the JSON IPC channel -- without needing a display.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
 use std::time::Duration;
 
@@ -168,21 +168,36 @@ fn lists_tracks_and_switches_between_them() {
 fn accepts_speed_delays_and_volume() {
     let mut player = MpvPlayer::launch(&test_pattern(), &headless()).unwrap();
 
+    // Compared numerically, not as text: mpv answers "1.500000" for a speed of
+    // 1.5, and asserting on a float's formatting tests the formatter rather than
+    // the behaviour.
+    let number = |player: &mut MpvPlayer, property: &str| -> f64 {
+        player
+            .get_property(property)
+            .unwrap()
+            .parse()
+            .expect("mpv returned a non-numeric value")
+    };
+
     player.set_speed(1.5).unwrap();
-    assert_eq!(player.get_property("speed").unwrap(), "1.5");
+    assert!((number(&mut player, "speed") - 1.5).abs() < 1e-6);
 
     // Out of range values are clamped rather than rejected: a caller asking for
-    // 100x wants "as fast as you can", not an error.
+    // 1000x wants "as fast as you can", not an error.
     player.set_speed(1000.0).unwrap();
-    assert_eq!(player.get_property("speed").unwrap(), "4");
+    assert!((number(&mut player, "speed") - 4.0).abs() < 1e-6);
 
     player.set_audio_delay(-0.5).unwrap();
+    assert!((number(&mut player, "audio-delay") + 0.5).abs() < 1e-6);
+
     player.set_subtitle_delay(1.25).unwrap();
+    assert!((number(&mut player, "sub-delay") - 1.25).abs() < 1e-6);
+
     player.set_subtitles_visible(false).unwrap();
     assert_eq!(player.get_property("sub-visibility").unwrap(), "false");
 
     player.set_volume(50.0).unwrap();
-    assert_eq!(player.get_property("volume").unwrap(), "50");
+    assert!((number(&mut player, "volume") - 50.0).abs() < 1e-6);
 
     player.quit().unwrap();
 }
