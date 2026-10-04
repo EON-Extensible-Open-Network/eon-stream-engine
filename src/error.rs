@@ -134,9 +134,13 @@ impl fmt::Display for Error {
             }
             Self::MetadataTimeout { seconds } => write!(
                 f,
-                "no torrent metadata after {seconds}s. Nobody in the swarm answered, \
-                 which usually means the torrent has no seeders rather than that \
-                 anything here is wrong"
+                "no torrent metadata after {seconds}s. Either nobody in the swarm \
+                 answered -- which usually means the torrent has no seeders rather \
+                 than that anything here is wrong -- or this was a bare info hash \
+                 with no trackers, which has to find peers through the DHT. The DHT \
+                 deliberately keeps nothing between runs, so that path is slowest on \
+                 a fresh start; a magnet link with trackers in it does not wait for \
+                 the DHT at all"
             ),
             Self::TorrentNotFound { info_hash } => {
                 write!(f, "no torrent in this session has info hash {info_hash}")

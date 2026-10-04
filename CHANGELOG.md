@@ -73,6 +73,22 @@ machine's loopback interface is a few hundred lines a person can read, with no r
 table, no middleware and no behaviour nobody chose.
 
 ### Fixed
+- **The DHT is configured explicitly, and librqbit's default for it was wrong here three
+  times over.** The default persists DHT state, which writes a JSON file to an *OS config
+  directory* rather than beside the executable -- so the claim that this program writes
+  nothing outside its own folder was false. That file carries a `peer_store`: a record of
+  which swarms the machine joined, outliving the session that joined them. And it persists
+  the DHT's port, which is then preferred on the next start -- so if anything else holds
+  that port, a second instance or the previous one still closing, the bind fails and the
+  whole session refuses to start, taking every torrent with it. That last one is not
+  hypothetical; it is how this was found, by running the published binary twice.
+  `persistence: None` now, so the port falls through to 0 and the OS picks a free one each
+  run. The cost is a cold routing table at every start: the DHT-only path (a bare info hash
+  with no trackers) is slower, and nothing else is. A magnet link with trackers never waits
+  for the DHT.
+- The metadata timeout message no longer blames the swarm for what may be a cold DHT. It
+  said "the torrent has no seeders", which is misleading when the real cause is a bare info
+  hash with no trackers on a freshly started routing table.
 - `PlaybackSource::display_hint` percent-decodes the file name. A torrent's name reaches the
   loopback URL encoded, and this string is what the player puts in its window title -- so a
   viewer watching `Big Buck Bunny.mp4` read `Big%20Buck%20Bunny.mp4` in their title bar.

@@ -397,6 +397,57 @@ pub struct TorrentEngine {
     options: TorrentOptions,
 }
 
+/// Build the librqbit session options.
+///
+/// Separate from [`TorrentEngine::start`] so the choices below can be asserted
+/// in a test. Two of them are not defaults, and both defaults were wrong here.
+fn session_options(options: &TorrentOptions) -> SessionOptions {
+    SessionOptions {
+        disable_trackers: !options.use_trackers,
+        // Nothing is remembered between runs. A session file would be a record
+        // of what was watched, sitting on disk, which this project does not
+        // keep (madde 36 in spirit: absent beats off).
+        persistence: None,
+        fastresume: false,
+        peer_limit: options.peer_limit,
+        // The DHT is configured explicitly rather than taken from the default,
+        // whose `persistence: Some(..)` is wrong here three times over.
+        //
+        // It writes a JSON file to an **OS config directory**, not beside the
+        // executable -- so "everything this program writes is beside the
+        // executable, and nothing anywhere else" would simply have been false.
+        //
+        // That file contains a `peer_store`: a record of which swarms this
+        // machine joined, outliving the session that joined them. Keeping one
+        // contradicts the line directly above about not remembering what was
+        // watched.
+        //
+        // And it persists the DHT's port, which is then preferred on the next
+        // start. If anything else holds that port -- a second instance, or the
+        // previous one still closing -- the bind fails and the session does
+        // not start at all, which takes every torrent down with it. That is
+        // not hypothetical: it is how this was found.
+        //
+        // `persistence: None` means the port falls through to 0, so the OS
+        // picks a free one every run. The cost is rebuilding the routing table
+        // each start, which makes the first DHT lookup slower and nothing
+        // else; a magnet link with trackers does not wait for it.
+        dht: Some(librqbit::DhtSessionConfig {
+            bootstrap_addrs: None,
+            port: None,
+            persistence: None,
+        }),
+        ratelimits: librqbit::limits::LimitsConfig {
+            // A limit of zero would stall rather than mean unlimited, so the
+            // type is `NonZeroU32` and a zero here becomes `None`. Settings
+            // refuse a zero too; this is the second line.
+            upload_bps: options.upload_limit.and_then(std::num::NonZeroU32::new),
+            download_bps: options.download_limit.and_then(std::num::NonZeroU32::new),
+        },
+        ..Default::default()
+    }
+}
+
 impl TorrentEngine {
     /// Start a session and the loopback server.
     ///
@@ -423,23 +474,7 @@ impl TorrentEngine {
                 message: format!("could not start the async runtime: {e}"),
             })?;
 
-        let session_options = SessionOptions {
-            disable_trackers: !options.use_trackers,
-            // Nothing is remembered between runs. A session file would be a
-            // record of what was watched, sitting on disk, which this project
-            // does not keep (madde 36 in spirit: absent beats off).
-            persistence: None,
-            fastresume: false,
-            peer_limit: options.peer_limit,
-            ratelimits: librqbit::limits::LimitsConfig {
-                // A limit of zero would stall rather than mean unlimited, so
-                // the type is `NonZeroU32` and a zero here becomes `None`.
-                // Settings refuse a zero too; this is the second line.
-                upload_bps: options.upload_limit.and_then(std::num::NonZeroU32::new),
-                download_bps: options.download_limit.and_then(std::num::NonZeroU32::new),
-            },
-            ..Default::default()
-        };
+        let session_options = session_options(&options);
 
         let download_dir = options.download_dir.clone();
         let session = runtime
@@ -1067,6 +1102,63 @@ mod tests {
         assert!(file(0, "Movie/Sample/x.mkv", 1).looks_like_filler());
         assert!(file(0, "Movie/movie-trailer.mkv", 1).looks_like_filler());
         assert!(!file(0, "Movie/Movie.2026.mkv", 1).looks_like_filler());
+    }
+
+    #[test]
+    fn the_dht_writes_nothing_and_takes_a_fresh_port() {
+        // librqbit's default DHT persists its state -- including a store of
+        // which swarms this machine joined -- to an OS config directory, and
+        // prefers the port it saved last time. All three are wrong here: a
+        // file outside the executable's directory contradicts what this
+        // project says it writes, a peer store is a record it says it does not
+        // keep, and a remembered port means the whole session refuses to start
+        // when something else holds it.
+        let built = session_options(&TorrentOptions::default());
+        let dht = built.dht.as_ref().expect("the DHT stays enabled");
+        assert!(
+            dht.persistence.is_none(),
+            "a persisted DHT writes a peer store outside the executable's directory"
+        );
+        assert!(
+            dht.port.is_none(),
+            "no fixed port: the OS picks a free one every run"
+        );
+        assert!(
+            built.persistence.is_none(),
+            "no session file either -- it would record what was watched"
+        );
+        assert!(!built.fastresume);
+    }
+
+    #[test]
+    fn rate_limits_reach_the_session_and_a_zero_does_not() {
+        let limited = session_options(&TorrentOptions {
+            download_limit: Some(2048 * 1024),
+            upload_limit: Some(0),
+            ..TorrentOptions::default()
+        });
+        assert_eq!(
+            limited
+                .ratelimits
+                .download_bps
+                .map(std::num::NonZeroU32::get),
+            Some(2048 * 1024)
+        );
+        // Zero would stall rather than mean unlimited, so it becomes "no limit".
+        assert!(limited.ratelimits.upload_bps.is_none());
+    }
+
+    #[test]
+    fn trackers_can_be_turned_off_without_disabling_the_dht() {
+        let offline_trackers = session_options(&TorrentOptions {
+            use_trackers: false,
+            ..TorrentOptions::default()
+        });
+        assert!(offline_trackers.disable_trackers);
+        assert!(
+            offline_trackers.dht.is_some(),
+            "turning off trackers must leave the DHT, which is the whole point"
+        );
     }
 
     #[test]

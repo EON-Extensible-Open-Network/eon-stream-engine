@@ -174,9 +174,23 @@ fn a_magnet_link_becomes_bytes_over_http() {
 #[test]
 #[ignore = "needs the internet and a live swarm"]
 fn a_bare_info_hash_resolves_through_the_dht() {
-    // The shape an addon's stream object gives: `infoHash` and no trackers.
-    // Slower than a magnet with trackers, which is the point of testing it.
-    let engine = engine("dht", 256 * 1024);
+    // The shape an addon's stream object gives: `infoHash` and no trackers, so
+    // peers have to be found through the DHT. This is the slowest path there
+    // is, and deliberately so: the DHT persists nothing between runs, which
+    // means every start rebuilds the routing table from the bootstrap nodes.
+    //
+    // That is the cost of not writing a peer store to disk, and it lands
+    // entirely on this path -- a magnet link carrying trackers never waits for
+    // the DHT. Hence the generous timeout: on a cold table this can take
+    // minutes, and a tighter bound here would make the test flaky rather than
+    // make the engine faster.
+    let engine = TorrentEngine::start(TorrentOptions {
+        download_dir: scratch("dht"),
+        metadata_timeout: Duration::from_secs(240),
+        prebuffer_bytes: 256 * 1024,
+        ..TorrentOptions::default()
+    })
+    .expect("the engine starts");
     let handle = engine
         .add(&TorrentRequest::InfoHash {
             hex: "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c".to_owned(),
