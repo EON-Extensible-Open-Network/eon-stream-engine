@@ -51,6 +51,11 @@ impl PlaybackSource {
     ///
     /// A stream URL can carry a signed token, so only the last path segment is
     /// shown — the same discipline addon addresses get.
+    ///
+    /// The segment is percent-decoded, because this string is shown to a person
+    /// and ends up in the player's window title. A torrent's file name reaches
+    /// the loopback URL percent-encoded, so without decoding a viewer reads
+    /// `Big%20Buck%20Bunny.mp4` in their title bar.
     #[must_use]
     pub fn display_hint(&self) -> String {
         match self {
@@ -59,13 +64,36 @@ impl PlaybackSource {
                 .next()
                 .and_then(|u| u.rsplit('/').next())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("stream")
-                .to_owned(),
+                .map_or_else(|| "stream".to_owned(), percent_decode),
             Self::File(path) => path
                 .file_name()
                 .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned()),
         }
     }
+}
+
+/// Decode `%XX` sequences for display.
+///
+/// Lossy on purpose: a name that is not valid UTF-8 once decoded becomes
+/// replacement characters rather than an error, because the only consumer is a
+/// label and failing to name something is worse than naming it imperfectly.
+fn percent_decode(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// How to launch mpv.
@@ -854,6 +882,44 @@ mod tests {
         let hint = source.display_hint();
         assert_eq!(hint, "movie.mkv");
         assert!(!hint.contains("SECRET"));
+    }
+
+    #[test]
+    fn a_display_hint_is_decoded_for_reading() {
+        // A torrent's file name reaches the loopback URL percent-encoded, and
+        // this string ends up in the player's window title. Without decoding, a
+        // viewer reads `Big%20Buck%20Bunny.mp4` in their title bar -- which is
+        // what the published v0.12 binary did.
+        let source = PlaybackSource::Url(
+            "http://127.0.0.1:64427/token/hash/1/Big%20Buck%20Bunny.mp4".into(),
+        );
+        assert_eq!(source.display_hint(), "Big Buck Bunny.mp4");
+
+        // Non-ASCII survives, because a Turkish or Arabic file name is the case
+        // this matters most for.
+        let turkish = PlaybackSource::Url("http://127.0.0.1:1/t/h/0/G%C3%BCzel%20Film.mkv".into());
+        assert_eq!(turkish.display_hint(), "Güzel Film.mkv");
+
+        // A stray percent is left alone rather than swallowing the next two
+        // characters: `100%` appears in real file names.
+        let literal = PlaybackSource::Url("http://127.0.0.1:1/t/h/0/100%done.mkv".into());
+        assert_eq!(literal.display_hint(), "100%done.mkv");
+    }
+
+    #[test]
+    fn a_decoded_hint_still_hides_the_token() {
+        // Decoding must not turn the hint into more of the URL than before.
+        let source = PlaybackSource::Url(
+            "http://127.0.0.1:64427/0000000000000000000000000000000000000000000000000000000000000000/             dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c/1/movie.mkv?x=1"
+                .into(),
+        );
+        let hint = source.display_hint();
+        assert_eq!(hint, "movie.mkv");
+        assert!(!hint.contains("0000"), "the session token must not appear");
+        assert!(
+            !hint.contains("dd8255"),
+            "the info hash must not appear either"
+        );
     }
 
     #[test]

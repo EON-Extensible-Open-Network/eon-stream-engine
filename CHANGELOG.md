@@ -72,6 +72,13 @@ librqbit, so the saving is not compile time -- it is that the surface served on 
 machine's loopback interface is a few hundred lines a person can read, with no routing
 table, no middleware and no behaviour nobody chose.
 
+### Fixed
+- `PlaybackSource::display_hint` percent-decodes the file name. A torrent's name reaches the
+  loopback URL encoded, and this string is what the player puts in its window title -- so a
+  viewer watching `Big Buck Bunny.mp4` read `Big%20Buck%20Bunny.mp4` in their title bar.
+  Found by playing a torrent through the published v0.12 binary rather than by reading the
+  code, which is the only way this kind of thing gets found.
+
 ### One advisory exemption, with its reasoning
 `RUSTSEC-2026-0293` (ringbuf 0.4.8: double free in `Consumer::skip`/`clear` when an
 element's `Drop` panics) is ignored in `deny.toml`, and the entry carries the check rather
