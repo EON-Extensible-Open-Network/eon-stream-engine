@@ -60,6 +60,29 @@ jobs:
         # the risk is, and needs no display and no sample file.
         run: cargo test -- --ignored --test-threads=1
 
+  invariants:
+    name: project invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      # The loopback server is the one thing in this crate that listens on a
+      # port, so its guards are named here rather than left inside the general
+      # test run. They are the difference between "only localhost" being a
+      # reassurance and being true.
+      - name: the loopback server's guards
+        run: cargo test --lib -- server::
+
+      # The network tests in tests/torrent_stream.rs are #[ignore]d and are NOT
+      # run here. They need a live swarm, and a suite that goes red because
+      # strangers stopped seeding stops being trusted (madde 1). They are run
+      # deliberately:
+      #   cargo test --test torrent_stream -- --ignored --nocapture
+      - name: the ignored network tests still compile
+        run: cargo test --test torrent_stream --no-run
+
   deny:
     name: licences · advisories
     runs-on: ubuntu-latest

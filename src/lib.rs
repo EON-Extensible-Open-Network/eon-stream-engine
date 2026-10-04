@@ -67,21 +67,14 @@
 
 pub mod error;
 pub mod player;
+pub mod server;
+pub mod torrent;
 pub(crate) mod track;
 
 pub use error::{Error, Result};
 pub use player::{MpvPlayer, PlaybackSource, PlayerOptions, SeekMode, Track};
-
-/// Torrent engine: sequential piece selection around the playhead, web seeds
-/// (BEP 19), private-mode restrictions for institutional distribution.
-///
-/// Not implemented. The engine choice (librqbit) is recorded in the plan under
-/// madde 1; the work is the next slice after playback.
-pub mod torrent {}
-
-/// Local HTTP server that feeds the player. Loopback only, token guarded,
-/// range requests.
-///
-/// Not implemented. Needed only once a source is a torrent rather than a URL
-/// mpv can open by itself.
-pub mod server {}
+pub use server::LocalServer;
+pub use torrent::{
+    default_download_dir, TorrentEngine, TorrentFile, TorrentHandle, TorrentOptions,
+    TorrentProgress, TorrentRequest, VIDEO_EXTENSIONS,
+};

@@ -23,6 +23,15 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    # The Mozilla CA root bundle, reached through rustls (librqbit -> reqwest
+    # with `rust-tls`). CDLA-Permissive-2.0 is the Community Data License
+    # Agreement, which is a licence for *data* rather than code -- appropriate
+    # for a list of certificate authorities, and it attaches no conditions to
+    # downstream use. Added deliberately, which is what the note above asks
+    # for: this is the one inbound licence in the tree that is not a familiar
+    # code licence, and it is here because the alternative is shipping a TLS
+    # stack with no trust roots.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

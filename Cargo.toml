@@ -17,8 +17,29 @@ default = []
 embedded-mpv = []
 
 [dependencies]
+# The torrent engine, decided in madde 1. librqbit rather than a client written
+# here: BitTorrent is a wire protocol with twenty years of extensions, and the
+# part this project actually needed -- sequential piece selection that follows a
+# playhead -- librqbit already does, through `ManagedTorrent::stream`. Writing
+# our own would have meant reimplementing DHT, uTP, web seeds and tracker
+# protocols to arrive at the same place.
+#
+# Default features bring reqwest with native TLS plus an HTTP API client this
+# crate does not use. `rust-tls` instead: rustls is pure Rust, so a Windows
+# build needs no OpenSSL and the pinned toolchain is the whole toolchain
+# (madde 22, build verifiability).
+librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
+# librqbit is async, this crate's API is not: callers are a CLI and a Tauri
+# command handler, neither of which should have to own a runtime. The runtime
+# is owned here and the boundary is synchronous.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync"] }
+# Per-session loopback token. Already in the tree via librqbit, so declaring it
+# directly costs nothing and keeps the token's provenance explicit rather than
+# hand-rolling entropy.
+rand = "0.9"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
 
 [lints.rust]
 unsafe_code = "deny"      # not "forbid": FFI may be needed if libmpv is ever embedded
