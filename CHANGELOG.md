@@ -72,6 +72,15 @@ librqbit, so the saving is not compile time -- it is that the surface served on 
 machine's loopback interface is a few hundred lines a person can read, with no routing
 table, no middleware and no behaviour nobody chose.
 
+### One advisory exemption, with its reasoning
+`RUSTSEC-2026-0293` (ringbuf 0.4.8: double free in `Consumer::skip`/`clear` when an
+element's `Drop` panics) is ignored in `deny.toml`, and the entry carries the check rather
+than an assertion. The vulnerability needs an element whose `Drop` can panic; the only ring
+buffer in the tree is librqbit-utp's transmit buffer, typed `SharedRb<Heap<u8>>`, and `u8`
+has no destructor at all. There is also nowhere to move to: librqbit-utp 0.7.0 is the newest
+release, it requires `ringbuf = "0.4.7"`, and it is not optional in librqbit. The entry goes
+when librqbit-utp moves to ringbuf 0.5.
+
 ### Not implemented, deliberately
 - **Private trackers.** A passkey in a tracker URL is a credential, and handling it
   properly -- never logged, never shown, never in an error -- is a slice of its own.

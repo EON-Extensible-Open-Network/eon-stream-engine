@@ -4,6 +4,30 @@
 [advisories]
 yanked = "deny"
 
+# RUSTSEC-2026-0293 -- ringbuf 0.4.8, double free in `Consumer::skip` and
+# `Consumer::clear` when an element's `Drop` panics. Fixed in ringbuf 0.5.2.
+#
+# Unreachable on this path, and that is a check rather than a hope. The
+# vulnerability needs an element whose `Drop` can panic; the only ring buffer in
+# the tree is librqbit-utp's transmit buffer, declared at
+# `librqbit-utp-0.7.0/src/stream_tx.rs:129` as:
+#
+#     type RingBuf = SharedRb<Heap<u8>>;
+#
+# The element type is `u8`. It has no `Drop` implementation, so there is no
+# destructor that could panic and no second drop to perform. The one `skip` call
+# (stream_tx.rs:83) operates on that buffer.
+#
+# There is also no version to move to: librqbit-utp 0.7.0 is the newest release
+# and requires `ringbuf = "0.4.7"`, which cannot resolve to 0.5.2, and it is a
+# non-optional dependency of librqbit so it cannot be switched off. The choice
+# is this entry or no uTP.
+#
+# Remove this the moment librqbit-utp depends on ringbuf 0.5. It is written with
+# its reasoning rather than as a bare id so that whoever reads it next can check
+# the claim instead of trusting it.
+ignore = ["RUSTSEC-2026-0293"]
+
 [licenses]
 # Our own crates are copyleft and unpublished; the allow list below governs
 # DEPENDENCIES, which must stay permissive.
