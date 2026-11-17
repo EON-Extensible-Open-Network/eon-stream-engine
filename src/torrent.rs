@@ -327,6 +327,48 @@ impl TorrentHandle {
             })
     }
 
+    /// Which file to play, given what the viewer asked for and what the addon
+    /// said.
+    ///
+    /// Three ways to land on one, most explicit first:
+    ///
+    /// 1. **What the viewer chose.** It stands even if it is not a video: they
+    ///    have the file list in front of them and may want the extra or the
+    ///    sample.
+    /// 2. **What the addon named, if it looks like a video.** A stream's
+    ///    `fileIdx` is usually right and occasionally points at a subtitle, a
+    ///    sample, or a file list that has since changed. Handing mpv a `.srt`
+    ///    makes it quit before it ever opens its control channel, and what the
+    ///    viewer then reads is "lost contact with mpv", which tells them
+    ///    nothing and is not even what happened.
+    /// 3. **The largest real video**, which is what the addon meant.
+    ///
+    /// A torrent with no video in it at all falls back to whatever the addon
+    /// named rather than refusing: an audiobook is a legitimate thing to
+    /// stream.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoVideoInTorrent`] when there is no video and nothing was
+    /// named, so there is nothing left to guess with.
+    pub fn choose_file(
+        &self,
+        explicit: Option<usize>,
+        from_addon: Option<usize>,
+    ) -> Result<&TorrentFile> {
+        if let Some(chosen) = explicit.and_then(|index| self.files.get(index)) {
+            return Ok(chosen);
+        }
+        let named = from_addon.and_then(|index| self.files.get(index));
+        if let Some(named) = named.filter(|file| file.is_video) {
+            return Ok(named);
+        }
+        match self.best_video() {
+            Ok(file) => Ok(file),
+            Err(e) => named.ok_or(e),
+        }
+    }
+
     /// One file by index.
     ///
     /// # Errors
@@ -1011,6 +1053,60 @@ mod tests {
             file(1, "Movie/movie.nfo", 2048),
         ]);
         assert_eq!(torrent.best_video().unwrap().index, 0);
+    }
+
+    #[test]
+    fn the_addon_names_a_subtitle_and_the_video_is_played_instead() {
+        // The failure this prevents: mpv opens a `.srt`, finds nothing to
+        // play, and quits before answering on its control channel. What the
+        // viewer reads is "lost contact with mpv" and what actually happened
+        // is that we handed it a subtitle file.
+        let torrent = handle(vec![
+            file(0, "Big Buck Bunny/Big Buck Bunny.en.srt", 140),
+            file(1, "Big Buck Bunny/Big Buck Bunny.mp4", 276 * 1024 * 1024),
+            file(2, "Big Buck Bunny/poster.jpg", 100 * 1024),
+        ]);
+        assert_eq!(torrent.choose_file(None, Some(0)).unwrap().index, 1);
+    }
+
+    #[test]
+    fn the_addon_is_believed_when_it_names_a_video() {
+        // Two videos, and the addon knows which one this stream is for. The
+        // largest-file heuristic would pick the other one.
+        let torrent = handle(vec![
+            file(0, "Pack/S01E01.mkv", 2 * 1024 * 1024 * 1024),
+            file(1, "Pack/S01E02.mkv", 1024 * 1024 * 1024),
+        ]);
+        assert_eq!(torrent.choose_file(None, Some(1)).unwrap().index, 1);
+    }
+
+    #[test]
+    fn what_the_viewer_picked_wins_even_when_it_is_not_a_video() {
+        // They can see the file list. `play 3 file 2` means file 2.
+        let torrent = handle(vec![
+            file(0, "Pack/Movie.mkv", 1024 * 1024 * 1024),
+            file(1, "Pack/Movie.en.srt", 140),
+        ]);
+        assert_eq!(torrent.choose_file(Some(1), Some(0)).unwrap().index, 1);
+    }
+
+    #[test]
+    fn an_out_of_range_index_falls_through_rather_than_failing() {
+        let torrent = handle(vec![file(0, "Movie.mkv", 1024)]);
+        assert_eq!(torrent.choose_file(Some(9), Some(9)).unwrap().index, 0);
+    }
+
+    #[test]
+    fn a_torrent_with_no_video_still_plays_what_the_addon_named() {
+        // An audiobook or an album is a legitimate thing to stream, and
+        // refusing because nothing has a video extension would be this
+        // program's opinion rather than a fact.
+        let torrent = handle(vec![
+            file(0, "album/01.flac", 40 * 1024 * 1024),
+            file(1, "album/cover.jpg", 100 * 1024),
+        ]);
+        assert_eq!(torrent.choose_file(None, Some(0)).unwrap().index, 0);
+        assert!(torrent.choose_file(None, None).is_err());
     }
 
     #[test]

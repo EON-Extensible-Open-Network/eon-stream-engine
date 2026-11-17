@@ -272,7 +272,16 @@ impl MpvPlayer {
             }
         })?;
 
-        let ipc = endpoint.connect(options.ipc_timeout)?;
+        let ipc = match endpoint.connect(options.ipc_timeout) {
+            Ok(ipc) => ipc,
+            // mpv was started and never answered. Whatever it has to say about
+            // that is in its stderr, and discarding it leaves the caller with
+            // "did not open its control channel" and nowhere to go -- which is
+            // exactly the position the window was in the first time this
+            // happened. So: stop it, read what it said, and put that in the
+            // error.
+            Err(e) => return Err(with_child_output(e, child)),
+        };
         Ok(Self {
             child,
             ipc,
@@ -585,6 +594,58 @@ impl MpvPlayer {
 /// # Errors
 ///
 /// [`Error::MpvNotFound`] when nothing is found.
+/// Add what mpv printed to an error about mpv not answering.
+///
+/// The child is stopped first: it is of no use to anyone now, and a player
+/// nobody can talk to that keeps a window open is worse than no player. Then
+/// its stderr is read to the end -- which returns immediately once the process
+/// is gone -- and the last few lines are appended, because mpv puts the useful
+/// sentence last.
+fn with_child_output(error: Error, mut child: Child) -> Error {
+    // Whether it is already gone matters more than anything it printed: mpv
+    // quits immediately when it is handed something it cannot play -- a
+    // subtitle file picked out of a torrent, say -- and "did not open its
+    // control channel" describes that badly.
+    let gone = match child.try_wait() {
+        Ok(Some(status)) => Some(status),
+        _ => {
+            let _ = child.kill();
+            None
+        }
+    };
+    let mut said = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut raw = Vec::new();
+        if std::io::Read::read_to_end(&mut stderr, &mut raw).is_ok() {
+            said = String::from_utf8_lossy(&raw)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" / ");
+        }
+    }
+    let _ = child.wait();
+
+    let mut detail = String::new();
+    if let Some(status) = gone {
+        detail.push_str(&format!("; mpv exited first ({status})"));
+    }
+    if !said.is_empty() {
+        detail.push_str(&format!("; mpv said: {said}"));
+    }
+    if detail.is_empty() {
+        return error;
+    }
+    match error {
+        Error::PlayerIpc { message } => Error::PlayerIpc {
+            message: format!("{message}{detail}"),
+        },
+        other => other,
+    }
+}
+
 fn resolve_mpv(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return if path.is_file() {
