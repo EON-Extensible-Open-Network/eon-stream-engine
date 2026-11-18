@@ -26,7 +26,17 @@ yanked = "deny"
 # Remove this the moment librqbit-utp depends on ringbuf 0.5. It is written with
 # its reasoning rather than as a bare id so that whoever reads it next can check
 # the claim instead of trusting it.
-ignore = ["RUSTSEC-2026-0293"]
+#
+# RUSTSEC-2026-0543 -- chrono is unmaintained. Not a vulnerability: a notice that
+# fixes will stop coming. Checked rather than waved through: the only path is
+# librqbit-dht 9.0.1, which uses chrono in one place, `peer_store.rs`, to stamp
+# when a peer announced (`Utc::now()` into a `DateTime<Utc>`), and serialises
+# that stamp only to persist the DHT -- which this crate turns off
+# (`persistence: None`, torrent.rs). No parsing of outside input goes through
+# chrono here. There is no upgrade: the advisory lists no safe version, and
+# librqbit-dht is a non-optional dependency of librqbit. Remove this when
+# librqbit moves to another time crate.
+ignore = ["RUSTSEC-2026-0293", "RUSTSEC-2026-0543"]
 
 [licenses]
 # Our own crates are copyleft and unpublished; the allow list below governs
