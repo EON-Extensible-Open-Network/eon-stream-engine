@@ -437,6 +437,9 @@ pub struct TorrentEngine {
     session: Arc<Session>,
     server: LocalServer,
     options: TorrentOptions,
+    /// What has been given back of each torrent's files, by info hash: see
+    /// [`TorrentEngine::release_before`].
+    released: std::sync::Mutex<std::collections::HashMap<String, crate::release::Released>>,
 }
 
 /// Build the librqbit session options.
@@ -532,6 +535,7 @@ impl TorrentEngine {
             session,
             server,
             options,
+            released: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -565,9 +569,31 @@ impl TorrentEngine {
         let trackers = request.trackers();
         let timeout = self.options.metadata_timeout;
 
+        // Every torrent's storage is guarded, so a range given back to save
+        // disk space can never be read again: see `release`.
+        let released = self
+            .released
+            .lock()
+            .map(|mut all| {
+                all.entry(expected.to_ascii_lowercase())
+                    .or_default()
+                    .clone()
+            })
+            .unwrap_or_default();
+        // Each torrent in a folder of its own, named by its info hash: the
+        // guard then knows where every file is (see `release`), and clearing
+        // one torrent's leftovers is one folder.
+        let folder = self
+            .options
+            .download_dir
+            .join(expected.to_ascii_lowercase());
+        let storage = crate::release::GuardedFactory::boxed_with(released, folder.clone());
+
         let session = Arc::clone(&self.session);
         let handle = self.runtime.block_on(async move {
             let options = AddTorrentOptions {
+                storage_factory: Some(storage),
+                output_folder: Some(folder.to_string_lossy().into_owned()),
                 // Resuming over files already on disk needs this; without it a
                 // second run of the same torrent refuses rather than reusing
                 // what it already fetched.
@@ -740,12 +766,158 @@ impl TorrentEngine {
     pub fn remove(&self, handle: &TorrentHandle, delete_files: bool) -> Result<()> {
         let hex = validate_info_hash(&handle.info_hash)?;
         let id = self.id_for(&hex)?;
+        if let Ok(mut all) = self.released.lock() {
+            all.remove(&hex);
+        }
         let session = Arc::clone(&self.session);
         self.runtime
             .block_on(async move { session.delete(id, delete_files).await })
             .map_err(|e| Error::TorrentEngine {
                 message: format!("{e:#}"),
             })
+    }
+
+    /// Give back the disk space of a file from its first `keep_head` bytes up
+    /// to `before`, rounded down to a mebibyte, and answer how many bytes that
+    /// was. Ranges already given back are not given back twice.
+    ///
+    /// The range is marked unreadable *before* it is deallocated, so no read
+    /// -- a peer's request or the player's -- can see the zeros in between.
+    /// Choosing `before` safely is the caller's job: it must lie behind
+    /// anything the player can still be asked to read without restarting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TorrentNotFound`] or [`Error::FileIndexOutOfRange`], or
+    /// [`Error::TorrentIo`] when the file system refuses.
+    pub fn release_before(
+        &self,
+        handle: &TorrentHandle,
+        index: usize,
+        keep_head: u64,
+        before: u64,
+    ) -> Result<u64> {
+        const MIB: u64 = 1 << 20;
+        let file = handle.file(index)?;
+        let managed = self.lookup(&handle.info_hash)?;
+        let path = managed.output_folder().join(&file.path);
+        let released = self
+            .released
+            .lock()
+            .ok()
+            .and_then(|all| all.get(&handle.info_hash).cloned())
+            .ok_or_else(|| Error::TorrentNotFound {
+                info_hash: handle.info_hash.clone(),
+            })?;
+        let start = released.end(index).unwrap_or(keep_head).max(keep_head);
+        let end = before.min(file.length) / MIB * MIB;
+        if end <= start {
+            return Ok(0);
+        }
+        released.add(index, start..end);
+        // What came back is measured, not assumed: a range never downloaded
+        // -- the part skipped by a seek forward -- frees nothing.
+        let before_size = crate::release::on_disk(&path).unwrap_or_default();
+        crate::release::give_back(&path, start..end).map_err(|e| Error::TorrentIo {
+            message: format!("could not give back part of {}: {e}", file.name()),
+        })?;
+        let after_size = crate::release::on_disk(&path).unwrap_or(before_size);
+        Ok(before_size.saturating_sub(after_size))
+    }
+
+    /// Bytes a torrent's files actually occupy on disk, as the file system
+    /// counts them: a sparse file's length says nothing about its size, and
+    /// counting downloaded pieces misses both the half-written ones and what
+    /// was given back.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TorrentNotFound`] if nothing carries that info hash.
+    pub fn bytes_on_disk(&self, handle: &TorrentHandle) -> Result<u64> {
+        let managed = self.lookup(&handle.info_hash)?;
+        let folder = managed.output_folder().to_path_buf();
+        Ok(handle
+            .files()
+            .iter()
+            .filter_map(|file| crate::release::on_disk(&folder.join(&file.path)).ok())
+            .sum())
+    }
+
+    /// How many bytes of a file are downloaded without a gap, starting at
+    /// `offset`: what the player can read from there before it waits.
+    ///
+    /// The engine's totals cannot answer this. After a seek forward, the
+    /// bytes downloaded before the seek still count towards the file's total
+    /// and say nothing about what is ready at the new position -- which is
+    /// how a download held back because "plenty is ready" left the picture
+    /// waiting on a part nobody was fetching.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TorrentNotFound`], [`Error::FileIndexOutOfRange`], or
+    /// [`Error::TorrentEngine`] while the torrent is not live.
+    pub fn available_from(&self, handle: &TorrentHandle, index: usize, offset: u64) -> Result<u64> {
+        let managed = self.lookup(&handle.info_hash)?;
+        let (piece, start, length) = managed
+            .with_metadata(|metadata| {
+                let file = metadata.file_infos.get(index);
+                (
+                    u64::from(metadata.info.lengths().default_piece_length()),
+                    file.map(|f| f.offset_in_torrent),
+                    file.map(|f| f.len),
+                )
+            })
+            .map_err(|e| Error::TorrentEngine {
+                message: format!("{e:#}"),
+            })?;
+        let (Some(start), Some(length)) = (start, length) else {
+            return Err(Error::FileIndexOutOfRange {
+                index,
+                count: handle.files().len(),
+            });
+        };
+        if piece == 0 || offset >= length {
+            return Ok(0);
+        }
+        let id = self.id_for(&handle.info_hash)?;
+        let api = librqbit::Api::new(Arc::clone(&self.session), None);
+        let (haves, total) = api.api_dump_haves(id).map_err(|e| Error::TorrentEngine {
+            message: format!("{e:#}"),
+        })?;
+        let mut at = (start + offset) / piece;
+        while at < u64::from(total) {
+            let have = usize::try_from(at)
+                .ok()
+                .and_then(|i| haves.get(i).map(|bit| *bit))
+                .unwrap_or(false);
+            if !have {
+                break;
+            }
+            at += 1;
+        }
+        let ready_until = (at * piece).saturating_sub(start).min(length);
+        Ok(ready_until.saturating_sub(offset))
+    }
+
+    /// Where the given-back part of a file ends, if any of it was.
+    #[must_use]
+    pub fn released_until(&self, handle: &TorrentHandle, index: usize) -> Option<u64> {
+        self.released
+            .lock()
+            .ok()?
+            .get(&handle.info_hash)?
+            .end(index)
+    }
+
+    /// Change the download limit while running, in bytes per second; `None`
+    /// is unlimited. The host uses this to keep the download a few minutes
+    /// ahead of the playhead rather than racing to the end of a sixty-gigabyte
+    /// file the viewer may never reach.
+    pub fn set_download_limit(&self, bytes_per_second: Option<u64>) {
+        let bps = bytes_per_second
+            .map(|b| u32::try_from(b).unwrap_or(u32::MAX).max(1))
+            .and_then(std::num::NonZeroU32::new);
+        self.session.ratelimits.set_download_bps(bps);
     }
 
     /// Every torrent in this session.

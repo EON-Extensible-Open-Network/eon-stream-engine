@@ -37,6 +37,19 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time"
 # directly costs nothing and keeps the token's provenance explicit rather than
 # hand-rolling entropy.
 rand = "0.9"
+# The error type librqbit's storage trait speaks, needed to implement it: the
+# guard that keeps released ranges from being read (src/release.rs). Already in
+# the tree through librqbit.
+anyhow = "1"
+
+[target.'cfg(windows)'.dependencies]
+# One call, DeviceIoControl(FSCTL_SET_ZERO_DATA), to hand a watched range of a
+# sparse file back to the file system (src/release.rs). Already in the tree
+# through tokio and librqbit; declared for the two modules it needs. It is the
+# only unsafe code in this crate: two calls, each in its own function.
+# A second call, GetDiskFreeSpaceExW, answers how much room the disk has, so the
+# cache limit can never be set -- or left -- above what is free.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }

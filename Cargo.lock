@@ -630,9 +630,11 @@ dependencies = [
 name = "eon-stream-engine"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "librqbit",
  "rand 0.9.5",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

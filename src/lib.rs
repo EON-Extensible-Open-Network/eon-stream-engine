@@ -67,6 +67,7 @@
 
 pub mod error;
 pub mod player;
+mod release;
 pub mod server;
 pub mod torrent;
 pub(crate) mod track;
@@ -74,6 +75,13 @@ pub(crate) mod track;
 pub use error::{Error, Result};
 pub use player::{MpvPlayer, PlaybackSource, PlayerOptions, SeekMode, Track};
 pub use server::LocalServer;
+
+/// Bytes free for this user on the disk holding `path`, where the platform
+/// can say: the cache limit is held under it.
+#[must_use]
+pub fn free_space(path: &std::path::Path) -> Option<u64> {
+    release::free_space(path).ok()
+}
 pub use torrent::{
     default_download_dir, TorrentEngine, TorrentFile, TorrentHandle, TorrentOptions,
     TorrentProgress, TorrentRequest, VIDEO_EXTENSIONS,
