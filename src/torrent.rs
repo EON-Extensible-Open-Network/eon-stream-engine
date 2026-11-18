@@ -899,6 +899,25 @@ impl TorrentEngine {
         Ok(ready_until.saturating_sub(offset))
     }
 
+    /// Fetch only one file of a torrent: downloading one episode out of a
+    /// season pack should not download the season.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TorrentNotFound`], or [`Error::TorrentEngine`] when librqbit
+    /// refuses.
+    pub fn only_file(&self, handle: &TorrentHandle, index: usize) -> Result<()> {
+        let _file = handle.file(index)?;
+        let managed = self.lookup(&handle.info_hash)?;
+        let session = Arc::clone(&self.session);
+        let only: std::collections::HashSet<usize> = std::iter::once(index).collect();
+        self.runtime
+            .block_on(async move { session.update_only_files(&managed, &only).await })
+            .map_err(|e| Error::TorrentEngine {
+                message: format!("{e:#}"),
+            })
+    }
+
     /// Where the given-back part of a file ends, if any of it was.
     #[must_use]
     pub fn released_until(&self, handle: &TorrentHandle, index: usize) -> Option<u64> {
@@ -940,6 +959,14 @@ impl TorrentEngine {
     ///
     /// Returns the directory the pieces were left in, when they were kept.
     pub fn shutdown(self) -> Option<PathBuf> {
+        self.shutdown_keeping(&[])
+    }
+
+    /// Shut down as [`Self::shutdown`] does, but leave the files of the
+    /// torrents named in `kept` (info hashes) on disk whatever
+    /// [`TorrentOptions::keep_files`] says: what a viewer downloaded to watch
+    /// later is theirs, not cache.
+    pub fn shutdown_keeping(self, kept: &[String]) -> Option<PathBuf> {
         let keep = self.options.keep_files;
         let directory = self.options.download_dir.clone();
 
@@ -948,9 +975,15 @@ impl TorrentEngine {
             // directory: the session knows which files belong to which torrent,
             // and a recursive delete of a user-chosen directory is not
             // something this code should ever do.
-            let handles: Vec<TorrentIdOrHash> = self
-                .session
-                .with_torrents(|torrents| torrents.map(|(id, _)| id.into()).collect());
+            let handles: Vec<TorrentIdOrHash> = self.session.with_torrents(|torrents| {
+                torrents
+                    .filter(|(_, managed)| {
+                        let hash = managed.info_hash().as_string();
+                        !kept.iter().any(|k| k.eq_ignore_ascii_case(&hash))
+                    })
+                    .map(|(id, _)| id.into())
+                    .collect()
+            });
             for id in handles {
                 let session = Arc::clone(&self.session);
                 let _ = self
