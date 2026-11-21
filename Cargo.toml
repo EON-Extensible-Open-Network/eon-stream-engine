@@ -51,6 +51,14 @@ anyhow = "1"
 # cache limit can never be set -- or left -- above what is free.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Storage_FileSystem"] }
 
+[target.'cfg(unix)'.dependencies]
+# The same two jobs elsewhere: fallocate(PUNCH_HOLE) on Linux and Android and
+# fcntl(F_PUNCHHOLE) on macOS give a watched range back, and statvfs says how
+# much room the disk has. Without them the cache on a small disk -- an Android
+# TV with a few gigabytes free -- could only grow (madde 2, plan v0.14).
+# Already in the tree through tokio and librqbit.
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
 

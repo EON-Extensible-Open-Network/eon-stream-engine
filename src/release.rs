@@ -358,19 +358,123 @@ pub(crate) fn free_space(path: &Path) -> std::io::Result<u64> {
     Ok(free)
 }
 
-/// Not measured elsewhere yet: the limit the viewer set is the only bound.
-#[cfg(not(windows))]
+/// Bytes free for this user on the disk holding `path` (`statvfs`).
+///
+/// # Errors
+///
+/// Whatever the file system reports, for example a path that does not exist.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub(crate) fn free_space(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: `c_path` is NUL-terminated and outlives the call; `stat` is a
+    // zeroed statvfs the call fills in, read only after it reports success.
+    let r = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if r != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: statvfs returned 0, so it initialised the whole structure.
+    let stat = unsafe { stat.assume_init() };
+    // The field types differ by platform (u32 on 32-bit Android); both fit.
+    #[allow(clippy::unnecessary_cast, clippy::useless_conversion)]
+    Ok(u64::from(stat.f_bavail as u64).saturating_mul(u64::from(stat.f_frsize as u64)))
+}
+
+#[cfg(not(any(windows, unix)))]
 pub(crate) fn free_space(_path: &Path) -> std::io::Result<u64> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "free space is only measured on Windows in this alpha",
+        "free space is not measured on this platform",
     ))
 }
 
-/// Elsewhere the range is only recorded, not deallocated: punching holes
-/// there is `fallocate` on Linux and `F_PUNCHHOLE` on macOS, neither of which
-/// this alpha ships for yet. Recording it still keeps the reads guarded.
-#[cfg(not(windows))]
+/// Linux and Android: `fallocate(PUNCH_HOLE | KEEP_SIZE)` frees the range's
+/// blocks and leaves the file's length alone, which is the same thing
+/// `FSCTL_SET_ZERO_DATA` does on Windows. ext4, f2fs (most Android
+/// devices), XFS and btrfs support it; one that does not reports
+/// `EOPNOTSUPP`, and the range is then only recorded -- reads stay guarded.
+///
+/// # Errors
+///
+/// Whatever the file system reports.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[allow(unsafe_code)]
+pub(crate) fn give_back(path: &Path, range: Range<u64>) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if range.end <= range.start {
+        return Ok(());
+    }
+    let to_off = |n: u64| {
+        libc::off64_t::try_from(n)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    };
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let (offset, length) = (to_off(range.start)?, to_off(range.end - range.start)?);
+    // SAFETY: `file` is open for writing and outlives the call, so the
+    // descriptor is valid; the remaining arguments are plain integers.
+    let r = unsafe {
+        libc::fallocate64(
+            file.as_raw_fd(),
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            offset,
+            length,
+        )
+    };
+    if r != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// macOS: `fcntl(F_PUNCHHOLE)`. APFS frees whole blocks only, and refuses a
+/// range that does not start and end on one, so the range is narrowed to
+/// the blocks wholly inside it -- what is kept is at most two blocks more.
+///
+/// # Errors
+///
+/// Whatever the file system reports.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub(crate) fn give_back(path: &Path, range: Range<u64>) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let block = file.metadata()?.blksize().max(1);
+    let start = range.start.div_ceil(block) * block;
+    let end = range.end / block * block;
+    if end <= start {
+        return Ok(());
+    }
+    let to_off = |n: u64| {
+        libc::off_t::try_from(n)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    };
+    let hole = libc::fpunchhole_t {
+        fp_flags: 0,
+        reserved: 0,
+        fp_offset: to_off(start)?,
+        fp_length: to_off(end - start)?,
+    };
+    // SAFETY: `file` is open for writing and outlives the call; `hole` is a
+    // fully initialised fpunchhole_t on this stack frame for the whole call.
+    let r = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PUNCHHOLE, &raw const hole) };
+    if r == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Elsewhere the range is only recorded, not deallocated. Recording it
+/// still keeps the reads guarded.
+#[cfg(not(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos"
+)))]
 pub(crate) fn give_back(_path: &Path, _range: Range<u64>) -> std::io::Result<()> {
     Ok(())
 }
@@ -379,7 +483,7 @@ pub(crate) fn give_back(_path: &Path, _range: Range<u64>) -> std::io::Result<()>
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     #[test]
     fn the_free_space_of_a_real_disk_is_measured() -> std::io::Result<()> {
         assert!(free_space(&std::env::temp_dir())? > 0);
@@ -400,7 +504,7 @@ mod tests {
         assert_eq!(released.end(1), None);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_released_range_of_a_sparse_file_reads_back_as_zeros() -> std::io::Result<()> {
         use std::io::{Read, Seek, SeekFrom, Write};
